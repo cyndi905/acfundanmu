@@ -24,6 +24,19 @@ PlayResY: %d
 
 `
 
+// ass 文件的 Script Info （用于基于开播时间计算弹幕时间的弹幕）
+const scriptInfoWithLiveTime = `[Script Info]
+; LiveID: %s
+; LiveStartTime: %s
+; StreamName: %s
+Title: %s
+ScriptType: v4.00+
+Collisions: Normal
+PlayResX: %d
+PlayResY: %d
+
+`
+
 // ass 文件的 V4+ Styles
 const sytles = `[V4+ Styles]
 Format: Name, Fontname, Fontsize, PrimaryColour, SecondaryColour, OutlineColour, BackColour, Bold, Italic, Underline, StrikeOut, ScaleX, ScaleY, Spacing, Angle, BorderStyle, Outline, Shadow, Alignment, MarginL, MarginR, MarginV, Encoding
@@ -51,11 +64,12 @@ type danmuTime int64
 
 // SubConfig 是字幕的详细设置
 type SubConfig struct {
-	Title     string `json:"title"`     // 字幕标题
-	PlayResX  int    `json:"playResX"`  // 视频分辨率
-	PlayResY  int    `json:"playResY"`  // 视频分辨率
-	FontSize  int    `json:"fontSize"`  // 字体大小
-	StartTime int64  `json:"startTime"` // 直播录播开始的时间，是以纳秒为单位的 Unix 时间
+	Title         string `json:"title"`         // 字幕标题
+	PlayResX      int    `json:"playResX"`      // 视频分辨率
+	PlayResY      int    `json:"playResY"`      // 视频分辨率
+	FontSize      int    `json:"fontSize"`      // 字体大小
+	StartTime     int64  `json:"startTime"`     // 直播录播开始的时间，是以纳秒为单位的 Unix 时间
+	LiveStartTime int64  `json:"liveStartTime"` // 直播实际开始时间（微秒）
 }
 
 // dTime 就是计算弹幕碰撞需要的数据
@@ -173,6 +187,114 @@ func (ac *AcFunLive) WriteASS(ctx context.Context, s SubConfig, file string, new
 						)
 						_, err = f.WriteString(s)
 						checkErr(err)
+						break
+					}
+				}
+			}
+		}
+	}
+}
+
+// WriteASSWithLiveStartTime 使用直播开始时间对齐弹幕（这是一个特殊实现，弹幕可用于在爱咔下载录播）
+func (ac *AcFunLive) WriteASSWithLiveStartTime(
+	ctx context.Context,
+	s SubConfig,
+	file string,
+	newFile bool,
+	liveStartTime int64, // 直播开始时间（微秒）
+) {
+	defer func() {
+		if err := recover(); err != nil {
+			log.Printf("Recovering from panic in WriteASSWithLiveStartTime(), error: %v", err)
+			log.Println("停止写入 ass 字幕")
+		}
+	}()
+
+	if ac.q == nil {
+		log.Println("需要先调用 StartDanmu()，event 不能为 true")
+		return
+	}
+	if ac.t.liverUID == 0 {
+		log.Println("主播 uid 不能为 0")
+		return
+	}
+	if (*queue.Queue)(ac.q).Disposed() {
+		return
+	}
+
+	var f *os.File
+	var err error
+	if newFile {
+		f, err = os.OpenFile(file, os.O_WRONLY|os.O_CREATE|os.O_TRUNC, 0644)
+		checkErr(err)
+		defer f.Close()
+
+		// 在 Script Info 中注入 LiveStartTime
+		info := fmt.Sprintf(scriptInfoWithLiveTime,
+			ac.info.LiveID,
+			time.UnixMicro(liveStartTime).Format("2006-01-01 11:04:05.000"),
+			ac.info.StreamName,
+			s.Title,
+			s.PlayResX,
+			s.PlayResY,
+		)
+		style := fmt.Sprintf(sytles, s.FontSize)
+		_, _ = f.WriteString(info)
+		_, _ = f.WriteString(style)
+		_, _ = f.WriteString(events)
+	} else {
+		f, err = os.OpenFile(file, os.O_WRONLY|os.O_APPEND|os.O_CREATE, 0644)
+		checkErr(err)
+		defer f.Close()
+	}
+
+	lastTime := make([]dTime, queueLen)
+	for {
+		select {
+		case <-ctx.Done():
+			return
+		default:
+			danmu := ac.GetDanmu()
+			if danmu == nil {
+				return
+			}
+
+			for _, d := range danmu {
+				c, ok := d.(*Comment)
+				if !ok {
+					continue
+				}
+
+				length := utf8.RuneCountInString(c.Content) * s.FontSize
+				sendTime := c.SendTime * 1e6 // 转为微秒
+
+				// 使用 liveStartTime 而不是 s.StartTime
+				offset := sendTime - liveStartTime // 弹幕相对于直播开始的偏移（微秒）
+
+				dt := dTime{
+					appear:    offset,
+					emerge:    offset + (int64(length)*duration)/int64(s.PlayResX+length),
+					disappear: offset + duration,
+				}
+
+				// 防碰撞逻辑
+				for i, t := range lastTime {
+					leftTime := offset + (int64(s.PlayResX)*duration)/int64(s.PlayResX+length)
+					if dt.appear > t.emerge && leftTime > t.disappear {
+						lastTime[i] = dt
+
+						sLine := fmt.Sprintf(dialogue,
+							danmuTime(dt.appear),
+							danmuTime(dt.disappear),
+							convert(c.Nickname),
+							c.UserID,
+							s.PlayResX+length/2,
+							s.FontSize*(i+1),
+							-length/2,
+							s.FontSize*(i+1),
+							c.Content,
+						)
+						_, _ = f.WriteString(sLine)
 						break
 					}
 				}
