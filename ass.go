@@ -201,7 +201,7 @@ func (ac *AcFunLive) WriteASSWithLiveStartTime(
 	s SubConfig,
 	file string,
 	newFile bool,
-	liveStartTime int64, // 直播开始时间（微秒）
+	liveStartTime int64, // 毫秒
 ) {
 	defer func() {
 		if err := recover(); err != nil {
@@ -229,10 +229,10 @@ func (ac *AcFunLive) WriteASSWithLiveStartTime(
 		checkErr(err)
 		defer f.Close()
 
-		// 在 Script Info 中注入 LiveStartTime
+		// 注：这里 liveStartTime 是毫秒，但 time.UnixMicro 需要微秒 → ×1000
 		info := fmt.Sprintf(scriptInfoWithLiveTime,
 			ac.info.LiveID,
-			time.UnixMicro(liveStartTime).Format("2006-01-02 15:04:05.000"),
+			time.UnixMilli(liveStartTime).Format("2006-01-02 15:04:05.000"), // 改为 UnixMilli
 			ac.info.StreamName,
 			s.Title,
 			s.PlayResX,
@@ -266,25 +266,24 @@ func (ac *AcFunLive) WriteASSWithLiveStartTime(
 				}
 
 				length := utf8.RuneCountInString(c.Content) * s.FontSize
-				sendTime := c.SendTime * 1e6 // 转为微秒
 
-				// 使用 liveStartTime 而不是 s.StartTime
-				offset := sendTime - liveStartTime // 弹幕相对于直播开始的偏移（微秒）
-
+				// liveStartTime 和 c.SendTime 都视为毫秒
+				deltaMs := c.SendTime - liveStartTime // 毫秒偏移
+				offsetNs := deltaMs * 1_000_000       // 转为纳秒（供 danmuTime 使用）
 				dt := dTime{
-					appear:    offset,
-					emerge:    offset + (int64(length)*duration)/int64(s.PlayResX+length),
-					disappear: offset + duration,
+					appear:    offsetNs,
+					emerge:    offsetNs + (int64(length)*duration)/int64(s.PlayResX+length),
+					disappear: offsetNs + duration,
 				}
 
 				// 防碰撞逻辑
 				for i, t := range lastTime {
-					leftTime := offset + (int64(s.PlayResX)*duration)/int64(s.PlayResX+length)
+					leftTime := offsetNs + (int64(s.PlayResX)*duration)/int64(s.PlayResX+length)
 					if dt.appear > t.emerge && leftTime > t.disappear {
 						lastTime[i] = dt
 
 						sLine := fmt.Sprintf(dialogue,
-							danmuTime(dt.appear),
+							danmuTime(dt.appear), // 传 offsetNs（纳秒偏移）
 							danmuTime(dt.disappear),
 							convert(c.Nickname),
 							c.UserID,
