@@ -266,7 +266,7 @@ func (ac *AcFunLive) WriteASSWithLiveStartTime(
 				}
 
 				length := utf8.RuneCountInString(c.Content) * s.FontSize
-				sendTime := c.SendTime * 1e6 // 转为微秒
+				sendTime := c.SendTime * 1000
 
 				// 使用 liveStartTime 而不是 s.StartTime
 				offset := sendTime - liveStartTime // 弹幕相对于直播开始的偏移（微秒）
