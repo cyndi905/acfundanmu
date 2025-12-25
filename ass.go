@@ -232,7 +232,7 @@ func (ac *AcFunLive) WriteASSWithLiveStartTime(
 		// 在 Script Info 中注入 LiveStartTime
 		info := fmt.Sprintf(scriptInfoWithLiveTime,
 			ac.info.LiveID,
-			time.UnixMicro(liveStartTime).Format("2006-01-01 11:04:05.000"),
+			time.UnixMicro(liveStartTime).Format("2006-01-02 15:04:05.000"),
 			ac.info.StreamName,
 			s.Title,
 			s.PlayResX,
