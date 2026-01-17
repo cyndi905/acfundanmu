@@ -218,6 +218,92 @@ func (t *token) getAcFunToken() (e error) {
 	return nil
 }
 
+// 用于NewAcFunLiveForCheck方法,一般情况下不要调用这个方法
+func (t *token) getLiveTokenForForCheck() (stream StreamInfo, e error) {
+	defer func() {
+		if err := recover(); err != nil {
+			e = fmt.Errorf("getLiveTokenForForCheck() error: %v", err)
+		}
+	}()
+
+	if t.liverUID == 0 {
+		return stream, nil
+	}
+
+	var play string
+	if len(t.Cookies) != 0 {
+		// 需要 userId、deviceID 和 serviceToken
+		play = fmt.Sprintf(playURL, t.UserID, t.DeviceID, midgroundSt, t.ServiceToken)
+	} else {
+		play = fmt.Sprintf(playURL, t.UserID, t.DeviceID, visitorSt, t.ServiceToken)
+	}
+
+	form := fasthttp.AcquireArgs()
+	defer fasthttp.ReleaseArgs(form)
+	// authorId 就是主播的 uid
+	form.Set("authorId", strconv.FormatInt(t.liverUID, 10))
+	form.Set("pullStreamType", "FLV")
+	client := &httpClient{
+		url:         play,
+		body:        form.QueryString(),
+		method:      "POST",
+		contentType: formContentType,
+		referer:     t.livePage, // 会验证 Referer
+		noReqID:     true,
+	}
+	body, err := client.request()
+	checkErr(err)
+
+	p := generalParserPool.Get()
+	defer generalParserPool.Put(p)
+	v, err := p.ParseBytes(body)
+	checkErr(err)
+	if v.GetInt("result") != 1 {
+		if v.GetInt("result") == 129004 {
+			return stream, fmt.Errorf("129004")
+		}
+		panic(fmt.Errorf("获取直播详细信息失败，响应为 %s", string(body)))
+	}
+
+	v = v.Get("data")
+	// 主要获取到liveId即可其他信息不重要
+	liveID := string(v.GetStringBytes("liveId"))
+	enterRoomAttach := string(v.GetStringBytes("enterRoomAttach"))
+	availableTickets := v.GetArray("availableTickets")
+	tickets := make([]string, len(availableTickets))
+	for i, ticket := range availableTickets {
+		tickets[i] = string(ticket.GetStringBytes())
+	}
+
+	t.liveID = liveID
+	t.enterRoomAttach = enterRoomAttach
+	t.tickets = tickets
+	t.appID = 0
+	t.instanceID = 0
+	t.sessionKey = nil
+	t.seqID = atomic.NewInt64(1)
+	t.headerSeqID = atomic.NewInt64(1)
+	t.heartbeatSeqID = 0
+	t.ticketIndex = atomic.NewUint32(0)
+	t.err = atomic.NewError(nil)
+
+	t.gifts = nil
+
+	stream = StreamInfo{
+		LiveID:        liveID,
+		Title:         string(v.GetStringBytes("caption")),
+		LiveStartTime: v.GetInt64("liveStartTime"),
+		Panoramic:     v.GetBool("panoramic"),
+	}
+	videoPlayRes := v.GetStringBytes("videoPlayRes")
+	v, err = p.ParseBytes(videoPlayRes)
+	checkErr(err)
+	stream.StreamName = string(v.GetStringBytes("streamName"))
+	stream.StreamList = make([]StreamURL, 0)
+
+	return stream, nil
+}
+
 // 获取直播间的 token
 func (t *token) getLiveToken() (stream StreamInfo, e error) {
 	defer func() {

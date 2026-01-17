@@ -555,6 +555,35 @@ func LoginWithQRCode(qrCodeCallback func(QRCode), scannedCallback func()) (cooki
 	return loginWithQRCode(qrCodeCallback, scannedCallback)
 }
 
+// NewAcFunLiveForCheck 新建一个 *AcFunLive，用于测试是否开播，会忽略一些报错
+func NewAcFunLiveForCheck(options ...Option) (ac *AcFunLive, err error) {
+	ac = new(AcFunLive)
+	ac.info = new(liveInfo)
+	ac.t = new(token)
+	ac.t.livePage = liveHost
+	ac.handlerMap = new(handlerMap)
+	ac.handlerMap.listMap = make(map[eventType][]eventHandler)
+
+	for _, option := range options {
+		option(ac)
+	}
+
+	if ac.t.UserID == 0 {
+		ac.info.StreamInfo, err = ac.t.getToken()
+	} else {
+		ac.info.StreamInfo, err = ac.t.getLiveTokenForForCheck()
+	}
+	if err != nil {
+		// 检测到关播时不需要输出错误
+		if err.Error() == "129004" {
+			return nil, err
+		}
+		return nil, fmt.Errorf("NewAcFunLive() error: 初始化失败：%w", err)
+	}
+
+	return ac, nil
+}
+
 // NewAcFunLive 新建一个 *AcFunLive
 func NewAcFunLive(options ...Option) (ac *AcFunLive, err error) {
 	ac = new(AcFunLive)
